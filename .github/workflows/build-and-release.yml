@@ -60,10 +60,6 @@ jobs:
         if: matrix.shard == 0
         run: python3 tools/check-workflow.py
 
-      - name: Check that the test selector agrees with itself
-        if: matrix.shard == 0
-        run: bash tools/pick-tests.sh --self-test
-
       - name: Check that the test map and the tests agree
         if: matrix.shard == 0
         run: python3 tools/check-test-map.py
@@ -106,10 +102,36 @@ jobs:
           path: ~/.m2/repository
           key: robolectric-runtime-${{ steps.robolectric.outputs.version }}-${{ runner.os }}
 
+      - name: Work out this shard's share
+        id: shard
+        run: |
+          classes="$(bash tools/test-shard.sh --shard ${{ matrix.shard }} --of ${{ strategy.job-total }} \
+            | grep '^com\.' | paste -sd, -)"
+          if [ -z "$classes" ]; then
+            echo "::error::This shard was dealt no test classes at all."
+            exit 1
+          fi
+          echo "classes=$classes" >> "$GITHUB_OUTPUT"
+          echo "this shard runs $(echo "$classes" | tr ',' '\n' | grep -c .) classes"
+
       - name: Run the tests
+        env:
+          PECHKA_ONLY_TESTS: ${{ steps.shard.outputs.classes }}
         run: |
           ./gradlew --parallel --no-daemon --configuration-cache \
               --profile :app:testDebugUnitTest :browser:testDebugUnitTest
+
+      - name: Check that the tests that ran are the tests that were asked for
+        if: always()
+        env:
+          PECHKA_ONLY_TESTS: ${{ steps.shard.outputs.classes }}
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          if [ "$JOB_STATUS" = "failure" ]; then
+            python3 tools/check-results.py --expect "" || true
+            exit 0
+          fi
+          python3 tools/check-results.py --expect "$PECHKA_ONLY_TESTS"
 
       - name: Say what actually failed, in words
         if: failure()
