@@ -1,0 +1,266 @@
+name: Build and release
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      version_name:
+        description: "The version of the release (for example 1.0)"
+        required: true
+        type: string
+      dev_build:
+        description: "Also build a debug copy"
+        required: false
+        type: boolean
+        default: true
+      ssh_debug:
+        description: "Hold the test job open for an SSH session (only if it fails)"
+        required: false
+        type: boolean
+        default: false
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  PROJECT_REPO: muffyuniverse/pechka-ai
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJSON(vars.TEST_SHARDS || '[0,1]') }}
+    steps:
+      - name: Check out the project
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: ${{ env.PROJECT_REPO }}
+          token: ${{ secrets.PECHKA_READ_TOKEN }}
+          fetch-depth: 0
+
+      - name: Say what this machine has
+        run: |
+          echo "processors: $(nproc)"
+          awk '/MemTotal/ {printf "memory: %.1f GB\n", $2/1024/1024}' /proc/meminfo
+
+      - name: Check the workflow itself
+        if: matrix.shard == 0
+        run: python3 tools/check-workflow.py
+
+      - name: Check that the test selector agrees with itself
+        if: matrix.shard == 0
+        run: bash tools/pick-tests.sh --self-test
+
+      - name: Check that the test map and the tests agree
+        if: matrix.shard == 0
+        run: python3 tools/check-test-map.py
+
+      - name: Check that the log's vocabulary is the standard one
+        if: matrix.shard == 0
+        run: python3 tools/check-taps.py
+
+      - name: Check that the version code only ever goes up
+        if: matrix.shard == 0
+        run: bash tools/version-code.sh --self-test
+
+      - name: Set up Java
+        uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@3f5f9adaf7d9fecd50b5935e54106014257a94e6
+        with:
+          cache-cleanup: never
+          cache-read-only: ${{ github.event_name == 'pull_request' }}
+
+      - name: Work out which Android runtime the tests need
+        id: robolectric
+        run: |
+          version="$(grep -oE 'org\.robolectric:robolectric:[0-9][^"\x27 ]*' \
+            app/build.gradle.kts | head -1 | sed 's/.*://')"
+          if [ -z "$version" ]; then
+            echo "::error::Could not find the Robolectric version in app/build.gradle.kts."
+            exit 1
+          fi
+          echo "robolectric $version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Remember the runtime the tests need
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: ~/.m2/repository
+          key: robolectric-runtime-${{ steps.robolectric.outputs.version }}-${{ runner.os }}
+
+      - name: Run the tests
+        run: |
+          ./gradlew --parallel --no-daemon --configuration-cache \
+              --profile :app:testDebugUnitTest :browser:testDebugUnitTest
+
+      - name: Say what actually failed, in words
+        if: failure()
+        run: |
+          python3 - <<'PY'
+          import glob, xml.etree.ElementTree as ET
+          shown = 0
+          for f in sorted(glob.glob("*/build/test-results/**/TEST-*.xml", recursive=True)):
+              try:
+                  root = ET.parse(f).getroot()
+              except Exception:
+                  continue
+              for case in root.iter("testcase"):
+                  for fail in case.iter("failure"):
+                      msg = (fail.get("message") or "").strip().splitlines()
+                      print(f"::error title={case.get('classname')}::{case.get('name')}")
+                      if msg:
+                          print(f"  {msg[0][:600]}")
+                      shown += 1
+          if shown:
+              print(f"{shown} failing test(s)")
+          else:
+              print("::error title=The suite did not run::No test-result XML was written.")
+          PY
+
+      - name: Keep the test report when something failed
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: test-report-${{ matrix.shard }}
+          path: |
+            app/build/reports/tests
+            app/build/test-results
+          if-no-files-found: warn
+          retention-days: 7
+
+  lint:
+    name: Deep checks
+    if: |
+      (github.event_name == 'push' && github.ref == 'refs/heads/main')
+      || (github.event_name == 'workflow_dispatch' && format('{0}', inputs.version_name) != '')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - name: Check out the project
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: ${{ env.PROJECT_REPO }}
+          token: ${{ secrets.PECHKA_READ_TOKEN }}
+          fetch-depth: 2
+
+      - name: Set up Java
+        uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@3f5f9adaf7d9fecd50b5935e54106014257a94e6
+        with:
+          cache-cleanup: never
+          cache-read-only: true
+
+      - name: Run the analysis
+        run: |
+          ./gradlew --parallel --no-daemon --no-configuration-cache lintRelease
+
+  build:
+    name: Build the app
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    permissions:
+      contents: read
+    steps:
+      - name: Check out the project
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: ${{ env.PROJECT_REPO }}
+          token: ${{ secrets.PECHKA_READ_TOKEN }}
+          fetch-depth: 2
+
+      - name: Set up Java
+        uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@3f5f9adaf7d9fecd50b5935e54106014257a94e6
+        with:
+          cache-cleanup: never
+
+      - name: Work out the version
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ inputs.version_name }}" ]; then
+            name="${{ inputs.version_name }}"
+          else
+            name="${GITHUB_RUN_NUMBER}"
+          fi
+          echo "name=${name}" >> "$GITHUB_OUTPUT"
+          echo "code=$(( 1000000000 + GITHUB_RUN_NUMBER ))" >> "$GITHUB_OUTPUT"
+          echo "The version is ${name}"
+
+      - name: Build the release
+        env:
+          PECHKA_KEYSTORE_BASE64: ${{ secrets.PECHKA_KEYSTORE_BASE64 }}
+          PECHKA_KEYSTORE_PASSWORD: ${{ secrets.PECHKA_KEYSTORE_PASSWORD }}
+          PECHKA_KEY_ALIAS: ${{ secrets.PECHKA_KEY_ALIAS }}
+          PECHKA_KEY_PASSWORD: ${{ secrets.PECHKA_KEY_PASSWORD }}
+          VERSION_CODE: ${{ steps.version.outputs.code }}
+          VERSION_NAME: ${{ steps.version.outputs.name }}
+        run: |
+          if [ -z "$PECHKA_KEYSTORE_BASE64" ]; then
+            echo "::error::PECHKA_KEYSTORE_BASE64 is empty, so a release cannot be signed."
+            exit 1
+          fi
+          ./gradlew --parallel --no-daemon --no-configuration-cache --profile assembleRelease \
+            -x lintVitalRelease \
+            -Ppechka.versionCode="$VERSION_CODE" \
+            -Ppechka.versionName="$VERSION_NAME"
+
+      - name: Build the debug copy
+        if: github.event_name != 'pull_request'
+        env:
+          PECHKA_KEYSTORE_BASE64: ${{ secrets.PECHKA_KEYSTORE_BASE64 }}
+          PECHKA_KEYSTORE_PASSWORD: ${{ secrets.PECHKA_KEYSTORE_PASSWORD }}
+          PECHKA_KEY_ALIAS: ${{ secrets.PECHKA_KEY_ALIAS }}
+          PECHKA_KEY_PASSWORD: ${{ secrets.PECHKA_KEY_PASSWORD }}
+          VERSION_CODE: ${{ steps.version.outputs.code }}
+          VERSION_NAME: ${{ steps.version.outputs.name }}
+        run: |
+          ./gradlew --parallel --no-daemon --no-configuration-cache assembleDebug \
+            -Ppechka.versionCode="$VERSION_CODE" \
+            -Ppechka.versionName="$VERSION_NAME"
+
+      - name: Hand the release APK onward
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: pechka-release-apk
+          path: app/build/outputs/apk/release/app-release.apk
+          retention-days: 7
+          if-no-files-found: error
+
+      - name: Hand the debug APK onward
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: pechka-debug-apk
+          path: app/build/outputs/apk/debug/app-debug.apk
+          retention-days: 7
+          if-no-files-found: error
