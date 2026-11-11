@@ -5,6 +5,8 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  repository_dispatch:
+    types: [project-push]
   workflow_dispatch:
     inputs:
       version_name:
@@ -171,7 +173,7 @@ jobs:
   lint:
     name: Deep checks
     if: |
-      (github.event_name == 'push' && github.ref == 'refs/heads/main')
+      github.event_name == 'push' || github.event_name == 'repository_dispatch'
       || (github.event_name == 'workflow_dispatch' && format('{0}', inputs.version_name) != '')
     runs-on: ubuntu-24.04
     timeout-minutes: 20
