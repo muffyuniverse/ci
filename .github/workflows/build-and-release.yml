@@ -42,7 +42,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: ${{ fromJSON(vars.TEST_SHARDS || '[0,1]') }}
+        shard: ${{ fromJSON(vars.TEST_SHARDS || '[0,1,2]') }}
     steps:
       - name: Check out the project
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
