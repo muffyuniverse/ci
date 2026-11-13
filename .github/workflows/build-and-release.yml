@@ -21,11 +21,11 @@ on:
         description: "A name for this build. It is a label, not a release."
         required: false
         type: string
-      dev_build:
-        description: "Also build a dev (debug) copy"
+      release_build:
+        description: "Also build a release APK. Off by default: a release is what ships at the end."
         required: false
         type: boolean
-        default: true
+        default: false
       ssh_debug:
         description: "Hold the test job open for an SSH session (only if it fails)"
         required: false
@@ -397,9 +397,34 @@ jobs:
           echo "name=${name}" >> "$GITHUB_OUTPUT"
           echo "code=$(( 1000000000 + RUN_NUMBER ))" >> "$GITHUB_OUTPUT"
           echo "The version is ${name} (code $(( 1000000000 + RUN_NUMBER )))."
-          echo "This repository builds and tests. It does not publish."
+          if [ "${{ inputs.release_build }}" = "true" ]; then
+            echo "A release APK is built as well, because it was asked for."
+          else
+            echo "A debug copy is built. No release APK is made, and nothing is published."
+          fi
+
+      # **A debug copy is what a development build is for, so it is built first.** The release build is
+      # made only when someone asks for it, because a release is what ships at the
+      # end: building one on every push spends a signing key and a version number on
+      # something nobody installs, and it is the wrong thing to hand to someone who
+      # asked to try the app. Both are signed with the same key and share the package
+      # name, so the debug copy installs over an older one like any update.
+      - name: Build the debug copy
+        if: github.event_name != 'pull_request'
+        env:
+          PECHKA_KEYSTORE_BASE64: ${{ secrets.PECHKA_KEYSTORE_BASE64 }}
+          PECHKA_KEYSTORE_PASSWORD: ${{ secrets.PECHKA_KEYSTORE_PASSWORD }}
+          PECHKA_KEY_ALIAS: ${{ secrets.PECHKA_KEY_ALIAS }}
+          PECHKA_KEY_PASSWORD: ${{ secrets.PECHKA_KEY_PASSWORD }}
+          VERSION_CODE: ${{ steps.version.outputs.code }}
+          VERSION_NAME: ${{ steps.version.outputs.name }}
+        run: |
+          ./gradlew --parallel --no-daemon --no-configuration-cache assembleDebug \
+            -Ppechka.versionCode="$VERSION_CODE" \
+            -Ppechka.versionName="$VERSION_NAME"
 
       - name: Build the release
+        if: inputs.release_build
         env:
           PECHKA_KEYSTORE_BASE64: ${{ secrets.PECHKA_KEYSTORE_BASE64 }}
           PECHKA_KEYSTORE_PASSWORD: ${{ secrets.PECHKA_KEYSTORE_PASSWORD }}
@@ -413,20 +438,6 @@ jobs:
             -Ppechka.versionCode="$VERSION_CODE" \
             -Ppechka.versionName="$VERSION_NAME"
 
-      - name: Build a dev copy
-        if: inputs.dev_build || github.event_name != 'pull_request'
-        env:
-          PECHKA_KEYSTORE_BASE64: ${{ secrets.PECHKA_KEYSTORE_BASE64 }}
-          PECHKA_KEYSTORE_PASSWORD: ${{ secrets.PECHKA_KEYSTORE_PASSWORD }}
-          PECHKA_KEY_ALIAS: ${{ secrets.PECHKA_KEY_ALIAS }}
-          PECHKA_KEY_PASSWORD: ${{ secrets.PECHKA_KEY_PASSWORD }}
-          VERSION_CODE: ${{ steps.version.outputs.code }}
-          VERSION_NAME: ${{ steps.version.outputs.name }}
-        run: |
-          ./gradlew --parallel --no-daemon --no-configuration-cache assembleDebug \
-            -Ppechka.versionCode="$VERSION_CODE" \
-            -Ppechka.versionName="$VERSION_NAME"
-
       - name: Say where the build's time went
         if: always()
         run: python3 tools/build-times.py --results . --top 10
@@ -434,8 +445,17 @@ jobs:
       - name: Check the signature of the APK
         env:
           EXPECTED_CERT: ${{ vars.EXPECTED_CERT }}
+          RELEASE_BUILD: ${{ inputs.release_build }}
         run: |
-          APK=app/build/outputs/apk/release/app-release.apk
+          if [ "$RELEASE_BUILD" = "true" ]; then
+            APK=app/build/outputs/apk/release/app-release.apk
+          else
+            APK=app/build/outputs/apk/debug/app-debug.apk
+          fi
+          if [ ! -f "$APK" ]; then
+            echo "::error::There is no APK at $APK, so there is nothing to check."
+            exit 1
+          fi
           BUILD_TOOLS="$(ls -d "$ANDROID_HOME"/build-tools/*/ 2>/dev/null | sort -V | tail -1)"
           BUILD_TOOLS="${BUILD_TOOLS%/}"
           if [ -z "$BUILD_TOOLS" ] || [ ! -x "$BUILD_TOOLS/apksigner" ]; then
@@ -469,19 +489,20 @@ jobs:
           fi
           echo "signed by the expected certificate"
 
-      - name: Hand the release APK onward
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: pechka-release-apk
-          path: app/build/outputs/apk/release/app-release.apk
-          retention-days: 7
-          if-no-files-found: error
-
-      - name: Hand the dev copy onward
-        if: inputs.dev_build || github.event_name != 'pull_request'
+      - name: Hand the debug copy onward
+        if: github.event_name != 'pull_request'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: pechka-debug-apk
           path: app/build/outputs/apk/debug/app-debug.apk
+          retention-days: 7
+          if-no-files-found: error
+
+      - name: Hand the release APK onward
+        if: inputs.release_build
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: pechka-release-apk
+          path: app/build/outputs/apk/release/app-release.apk
           retention-days: 7
           if-no-files-found: error
