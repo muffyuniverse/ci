@@ -105,13 +105,17 @@ jobs:
           # A copy that cannot be fetched is not a failure: this check exists to
           # catch a stale copy, and a network problem is not a stale copy. It says
           # so out loud rather than passing quietly.
-          copy="$(gh api "repos/$PUBLIC_REPO/contents/.github/workflows/build-and-release.yml" \
-            --jq '.content' 2>/dev/null | base64 -d 2>/dev/null)" || copy=""
-          if [ -z "$copy" ]; then
+          #
+          # The file is written straight from the API's answer, not through a shell
+          # variable. `copy="$(...)"` drops the last newline, so the fetched copy
+          # was always one byte short of the file it came from and every run would
+          # have reported drift that did not exist.
+          if ! gh api "repos/$PUBLIC_REPO/contents/.github/workflows/build-and-release.yml" \
+              --jq '.content' 2>/dev/null | base64 -d > /tmp/public-copy.yml 2>/dev/null \
+              || [ ! -s /tmp/public-copy.yml ]; then
             echo "::warning title=Public copy::the public repository's copy could not be read, so it was not compared."
             exit 0
           fi
-          printf '%s' "$copy" > /tmp/public-copy.yml
           python3 tools/render-ci-workflow.py --check --out /tmp/public-copy.yml
 
       - name: Check that the test map and the tests agree
