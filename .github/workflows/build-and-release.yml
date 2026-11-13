@@ -1,20 +1,28 @@
+# **Generated. Do not edit.**
+#
+# Every line here comes from a file in the project repository:
+#   .github/workflows/build-and-release.yml   (the test and lint jobs)
+#   tools/ci/build-job.yml                    (the build job)
+#
+# To change it, change one of those and run tools/render-ci-workflow.py.
+# tools/check-workflow.py fails when this file is not what they render to.
+
 name: Build and release
 
 on:
-  push:
-    branches: [main]
-  pull_request:
-    branches: [main]
+  # The project repository is private, so its own runs are queued and never
+  # given a machine. This repository is public, so it is asked to check a push
+  # there, and the run you are reading is the answer.
   repository_dispatch:
     types: [project-push]
   workflow_dispatch:
     inputs:
       version_name:
-        description: "The version of the release (for example 1.0)"
-        required: true
+        description: "A name for this build. It is a label, not a release."
+        required: false
         type: string
       dev_build:
-        description: "Also build a debug copy"
+        description: "Also build a dev (debug) copy"
         required: false
         type: boolean
         default: true
@@ -24,6 +32,9 @@ on:
         type: boolean
         default: false
 
+env:
+  PROJECT_REPO: muffyuniverse/pechka-ai
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -31,36 +42,77 @@ concurrency:
 permissions:
   contents: read
 
-env:
-  PROJECT_REPO: muffyuniverse/pechka-ai
-
 jobs:
   test:
     name: Test
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 20
     permissions:
       contents: read
+
     strategy:
-      fail-fast: false
+      fail-fast: true
       matrix:
-        shard: ${{ fromJSON(vars.TEST_SHARDS || '[0,1,2]') }}
+        shard: ${{ fromJSON(vars.TEST_SHARDS || '[0,1]') }}
+
     steps:
-      - name: Check out the project
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: Check out the code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          fetch-depth: 1
+          persist-credentials: false
           repository: ${{ env.PROJECT_REPO }}
           token: ${{ secrets.PECHKA_READ_TOKEN }}
-          fetch-depth: 0
 
-      - name: Say what this machine has
+      - name: Work out this shard's share
+        id: shard
+        env:
+          SHARD: ${{ matrix.shard }}
+          SHARD_OF: ${{ strategy.job-total }}
         run: |
-          echo "processors: $(nproc)"
-          awk '/MemTotal/ {printf "memory: %.1f GB\n", $2/1024/1024}' /proc/meminfo
+          classes="$(bash tools/test-shard.sh --shard "$SHARD" --of "$SHARD_OF" \
+            | grep '^com\.' | paste -sd, -)"
+          if [ -z "$classes" ]; then
+            echo "::error::This shard was dealt no test classes at all."
+            exit 1
+          fi
+          echo "classes=$classes" >> "$GITHUB_OUTPUT"
+          echo "this shard runs $(echo "$classes" | tr ',' '\n' | grep -c .) classes"
 
       - name: Check the workflow itself
         if: matrix.shard == 0
         run: python3 tools/check-workflow.py
+
+      - name: Check that the workflow is readable YAML
+        if: matrix.shard == 0
+        run: |
+          python3 tools/check-yaml.py --self-test
+          python3 tools/check-yaml.py
+          python3 tools/render-ci-workflow.py --self-test
+
+      - name: Check that the public repository's copy is what this one renders to
+        if: matrix.shard == 0
+        env:
+          GH_TOKEN: ${{ secrets.PECHKA_READ_TOKEN }}
+          PUBLIC_REPO: muffyuniverse/ci
+        run: |
+          # The public repository holds a copy of this workflow, generated from this
+          # file by tools/render-ci-workflow.py. A hand-kept copy drifted 755 lines
+          # apart from this one, with a different timeout and a different shard
+          # count, and nothing noticed. Rendering it here and comparing is what
+          # turns that drift into a failure instead of a surprise.
+          #
+          # A copy that cannot be fetched is not a failure: this check exists to
+          # catch a stale copy, and a network problem is not a stale copy. It says
+          # so out loud rather than passing quietly.
+          copy="$(gh api "repos/$PUBLIC_REPO/contents/.github/workflows/build-and-release.yml" \
+            --jq '.content' 2>/dev/null | base64 -d 2>/dev/null)" || copy=""
+          if [ -z "$copy" ]; then
+            echo "::warning title=Public copy::the public repository's copy could not be read, so it was not compared."
+            exit 0
+          fi
+          printf '%s' "$copy" > /tmp/public-copy.yml
+          python3 tools/render-ci-workflow.py --check --out /tmp/public-copy.yml
 
       - name: Check that the test map and the tests agree
         if: matrix.shard == 0
@@ -70,21 +122,30 @@ jobs:
         if: matrix.shard == 0
         run: python3 tools/check-taps.py
 
+      - name: Check that no string reads a property off a toString
+        if: matrix.shard == 0
+        run: python3 tools/check-interpolation.py
+
       - name: Check that the version code only ever goes up
         if: matrix.shard == 0
         run: bash tools/version-code.sh --self-test
 
       - name: Set up Java
-        uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad
+        uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
         with:
           distribution: temurin
           java-version: '21'
 
       - name: Set up Gradle
-        uses: gradle/actions/setup-gradle@3f5f9adaf7d9fecd50b5935e54106014257a94e6
+        uses: gradle/actions/setup-gradle@3f5f9adaf7d9fecd50b5935e54106014257a94e6 # v6
         with:
           cache-cleanup: never
           cache-read-only: ${{ github.event_name == 'pull_request' }}
+
+      - name: Say what this machine has
+        run: |
+          echo "processors: $(nproc)"
+          awk '/MemTotal/ {printf "memory: %.1f GB\n", $2/1024/1024}' /proc/meminfo
 
       - name: Work out which Android runtime the tests need
         id: robolectric
@@ -93,47 +154,36 @@ jobs:
             app/build.gradle.kts | head -1 | sed 's/.*://')"
           if [ -z "$version" ]; then
             echo "::error::Could not find the Robolectric version in app/build.gradle.kts."
+            echo "The runtime cache key depends on it, and an empty key would be shared"
+            echo "by every version."
             exit 1
           fi
           echo "robolectric $version"
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
       - name: Remember the runtime the tests need
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.m2/repository
           key: robolectric-runtime-${{ steps.robolectric.outputs.version }}-${{ runner.os }}
 
-      - name: Work out this shard's share
-        id: shard
-        run: |
-          classes="$(bash tools/test-shard.sh --shard ${{ matrix.shard }} --of ${{ strategy.job-total }} \
-            | grep '^com\.' | paste -sd, -)"
-          if [ -z "$classes" ]; then
-            echo "::error::This shard was dealt no test classes at all."
-            exit 1
-          fi
-          echo "classes=$classes" >> "$GITHUB_OUTPUT"
-          echo "this shard runs $(echo "$classes" | tr ',' '\n' | grep -c .) classes"
-
+      - name: Remember how the project is put together
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .gradle/configuration-cache
+          key: config-cache-v3-tests-${{ matrix.shard }}-${{ runner.os }}-${{ github.event_name == 'pull_request' && 'pr' || 'build' }}-${{ hashFiles('**/*.gradle.kts', 'gradle.properties', 'gradle/wrapper/gradle-wrapper.properties') }}
       - name: Run the tests
         env:
+          EVENT_NAME: ${{ github.event_name }}
           PECHKA_ONLY_TESTS: ${{ steps.shard.outputs.classes }}
         run: |
-          ./gradlew --parallel --no-daemon --configuration-cache \
-              --profile :app:testDebugUnitTest :browser:testDebugUnitTest
-
-      - name: Check that the tests that ran are the tests that were asked for
-        if: always()
-        env:
-          PECHKA_ONLY_TESTS: ${{ steps.shard.outputs.classes }}
-          JOB_STATUS: ${{ job.status }}
-        run: |
-          if [ "$JOB_STATUS" = "failure" ]; then
-            python3 tools/check-results.py --expect "" || true
-            exit 0
+          if [ "$EVENT_NAME" != "pull_request" ]; then
+            ./gradlew --parallel --no-daemon --configuration-cache \
+                --profile :app:testDebugUnitTest :browser:testDebugUnitTest -Ppechka.shots
+          else
+            ./gradlew --parallel --no-daemon --configuration-cache \
+                --profile :app:testDebugUnitTest :browser:testDebugUnitTest
           fi
-          python3 tools/check-results.py --expect "$PECHKA_ONLY_TESTS"
 
       - name: Say what actually failed, in words
         if: failure()
@@ -156,52 +206,129 @@ jobs:
           if shown:
               print(f"{shown} failing test(s)")
           else:
-              print("::error title=The suite did not run::No test-result XML was written.")
+              print("::error title=The suite did not run::No test-result XML was written, so the "
+                    "build did not get as far as running tests. The compiler's errors are above.")
           PY
 
-      - name: Keep the test report when something failed
-        if: failure()
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+      - name: Open an SSH session on the runner
+        if: failure() && inputs.ssh_debug
+        uses: owenthereal/action-upterm@6c2d60e09009f59cb4c45c88767c78701f14d121 # v2.8.1
         with:
-          name: test-report-${{ matrix.shard }}
+          limit-access-to-users: muffyuniverse,Zhukov-Alexander
+          full-access: true
+          detached: true
+          wait-timeout-minutes: 10
+
+      - name: Check that the tests that ran are the tests that were asked for
+        if: always()
+        env:
+          PECHKA_ONLY_TESTS: ${{ steps.shard.outputs.classes }}
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          if [ "$JOB_STATUS" = "failure" ]; then
+            python3 tools/check-results.py --expect "" || true
+            exit 0
+          fi
+          python3 tools/check-results.py --expect "$PECHKA_ONLY_TESTS"
+
+      - name: Say whether the suite still scales
+        if: always()
+        env:
+          SHARD_OF_TOTAL: ${{ strategy.job-total }}
+        run: |
+          python3 tools/scaling-report.py --shards "$SHARD_OF_TOTAL"
+
+      - name: Say where the test job's time went
+        if: always()
+        run: python3 tools/build-times.py --results . --top 8 --label test --no-budget
+
+      - name: Keep the scenarios
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: scenarios
+          path: app/build/outputs/scenarios
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Keep the test report when something failed
+
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: test-report
           path: |
             app/build/reports/tests
             app/build/test-results
           if-no-files-found: warn
           retention-days: 7
 
+
   lint:
     name: Deep checks
     if: |
-      github.event_name == 'push' || github.event_name == 'repository_dispatch'
+      (github.event_name == 'push' && github.ref == 'refs/heads/main')
       || (github.event_name == 'workflow_dispatch' && format('{0}', inputs.version_name) != '')
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:
       contents: read
+
     steps:
-      - name: Check out the project
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: Check out the code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          fetch-depth: 2
+          persist-credentials: false
           repository: ${{ env.PROJECT_REPO }}
           token: ${{ secrets.PECHKA_READ_TOKEN }}
-          fetch-depth: 2
+
+      - name: Did the app change
+        id: decision
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BEFORE: ${{ github.event.before }}
+          TOOLS_DIR: ${{ github.workspace }}/tools
+        run: |
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            echo "changed=yes" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          base="$(bash "$TOOLS_DIR/push-base.sh" "$BEFORE")"
+          verdict="$(bash "$TOOLS_DIR/changed-tests.sh" --base "$base")"
+          if [ "$verdict" = "NONE" ]; then
+            echo "changed=no" >> "$GITHUB_OUTPUT"
+            echo "Nothing in the app changed, so there is nothing to analyse."
+          else
+            echo "changed=yes" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Set up Java
-        uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad
+        if: steps.decision.outputs.changed == 'yes'
+        uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
         with:
           distribution: temurin
           java-version: '21'
 
       - name: Set up Gradle
-        uses: gradle/actions/setup-gradle@3f5f9adaf7d9fecd50b5935e54106014257a94e6
+        if: steps.decision.outputs.changed == 'yes'
+        uses: gradle/actions/setup-gradle@3f5f9adaf7d9fecd50b5935e54106014257a94e6 # v6
         with:
           cache-cleanup: never
           cache-read-only: true
 
       - name: Run the analysis
+        if: steps.decision.outputs.changed == 'yes'
         run: |
-          ./gradlew --parallel --no-daemon --no-configuration-cache lintRelease
+          if [ "${GITHUB_REF_NAME:-}" = "main" ]; then
+            echo "On main: every check, on the variant that ships."
+            ./gradlew --parallel --no-daemon --no-configuration-cache lintRelease
+          else
+            echo "::error::Lint is a release gate and this run is not on main."
+            echo "If this run is meant to publish, the gate on this job is wrong."
+            exit 1
+          fi
+
 
   build:
     name: Build the app
@@ -210,35 +337,65 @@ jobs:
     permissions:
       contents: read
     steps:
-      - name: Check out the project
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: Check out the code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ${{ env.PROJECT_REPO }}
           token: ${{ secrets.PECHKA_READ_TOKEN }}
           fetch-depth: 2
+          persist-credentials: false
 
       - name: Set up Java
-        uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad
+        uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
         with:
           distribution: temurin
           java-version: '21'
 
       - name: Set up Gradle
-        uses: gradle/actions/setup-gradle@3f5f9adaf7d9fecd50b5935e54106014257a94e6
+        uses: gradle/actions/setup-gradle@3f5f9adaa7d9fecd50b5935e54106014257a94e6 # v6
         with:
           cache-cleanup: never
 
+      - name: Put the signing key in place
+        env:
+          PECHKA_KEYSTORE_BASE64: ${{ secrets.PECHKA_KEYSTORE_BASE64 }}
+          PECHKA_KEYSTORE_PASSWORD: ${{ secrets.PECHKA_KEYSTORE_PASSWORD }}
+        run: |
+          if [ -z "$PECHKA_KEYSTORE_BASE64" ]; then
+            echo '::error::PECHKA_KEYSTORE_BASE64 is empty, so a release cannot be signed.'
+            exit 1
+          fi
+          if [ -z "$PECHKA_KEYSTORE_PASSWORD" ]; then
+            echo '::error::PECHKA_KEYSTORE_PASSWORD is empty, so the keystore cannot be opened.'
+            exit 1
+          fi
+          printf '%s' "$PECHKA_KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/check.jks"
+          if [ ! -s "$RUNNER_TEMP/check.jks" ]; then
+            echo '::error::PECHKA_KEYSTORE_BASE64 decodes to nothing.'
+            exit 1
+          fi
+
       - name: Work out the version
         id: version
+        env:
+          CHOSEN_VERSION: ${{ inputs.version_name }}
+          RUN_NUMBER: ${{ github.run_number }}
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ inputs.version_name }}" ]; then
-            name="${{ inputs.version_name }}"
+          if [ -n "${CHOSEN_VERSION:-}" ]; then
+            name="$CHOSEN_VERSION"
           else
-            name="${GITHUB_RUN_NUMBER}"
+            name="$RUN_NUMBER"
           fi
+          case "$name" in
+            ''|*[!A-Za-z0-9._-]*)
+              echo "The version name may only hold letters, digits, dots and dashes."
+              exit 1
+              ;;
+          esac
           echo "name=${name}" >> "$GITHUB_OUTPUT"
-          echo "code=$(( 1000000000 + GITHUB_RUN_NUMBER ))" >> "$GITHUB_OUTPUT"
-          echo "The version is ${name}"
+          echo "code=$(( 1000000000 + RUN_NUMBER ))" >> "$GITHUB_OUTPUT"
+          echo "The version is ${name} (code $(( 1000000000 + RUN_NUMBER )))."
+          echo "This repository builds and tests. It does not publish."
 
       - name: Build the release
         env:
@@ -249,17 +406,13 @@ jobs:
           VERSION_CODE: ${{ steps.version.outputs.code }}
           VERSION_NAME: ${{ steps.version.outputs.name }}
         run: |
-          if [ -z "$PECHKA_KEYSTORE_BASE64" ]; then
-            echo "::error::PECHKA_KEYSTORE_BASE64 is empty, so a release cannot be signed."
-            exit 1
-          fi
           ./gradlew --parallel --no-daemon --no-configuration-cache --profile assembleRelease \
             -x lintVitalRelease \
             -Ppechka.versionCode="$VERSION_CODE" \
             -Ppechka.versionName="$VERSION_NAME"
 
-      - name: Build the debug copy
-        if: github.event_name != 'pull_request'
+      - name: Build a dev copy
+        if: inputs.dev_build || github.event_name != 'pull_request'
         env:
           PECHKA_KEYSTORE_BASE64: ${{ secrets.PECHKA_KEYSTORE_BASE64 }}
           PECHKA_KEYSTORE_PASSWORD: ${{ secrets.PECHKA_KEYSTORE_PASSWORD }}
@@ -272,17 +425,59 @@ jobs:
             -Ppechka.versionCode="$VERSION_CODE" \
             -Ppechka.versionName="$VERSION_NAME"
 
+      - name: Say where the build's time went
+        if: always()
+        run: python3 tools/build-times.py --results . --top 10
+
+      - name: Check the signature of the APK
+        env:
+          EXPECTED_CERT: ${{ vars.EXPECTED_CERT }}
+        run: |
+          APK=app/build/outputs/apk/release/app-release.apk
+          BUILD_TOOLS="$(ls -d "$ANDROID_HOME"/build-tools/*/ 2>/dev/null | sort -V | tail -1)"
+          BUILD_TOOLS="${BUILD_TOOLS%/}"
+          if [ -z "$BUILD_TOOLS" ] || [ ! -x "$BUILD_TOOLS/apksigner" ]; then
+            echo "::error::No Android build tools found under $ANDROID_HOME"
+            exit 1
+          fi
+          if ! "$BUILD_TOOLS/apksigner" verify --print-certs "$APK" > certs.txt 2>&1; then
+            echo "::error::apksigner could not read the APK's certificates:"
+            cat certs.txt
+            exit 1
+          fi
+          cat certs.txt | sed 's/^/  /'
+          "$BUILD_TOOLS/apksigner" verify "$APK"
+          "$BUILD_TOOLS/zipalign" -c 4 "$APK"
+          if [ -z "${EXPECTED_CERT:-}" ]; then
+            echo "::error::EXPECTED_CERT is not set, so the APK's signer cannot be checked."
+            exit 1
+          fi
+          signer="$(sed -n 's/.*SHA-256 digest:[[:space:]]*//p' certs.txt \
+            | head -1 | tr -d ' :' | tr 'A-F' 'a-f')"
+          expected="$(printf '%s' "$EXPECTED_CERT" | tr -d ' :' | tr 'A-F' 'a-f')"
+          echo "  signer:   ${signer:-<none found>}"
+          echo "  expected: ${expected}"
+          if ! printf '%s' "$signer" | grep -Eq '^[0-9a-f]{64}$'; then
+            echo "::error::Could not read the certificate's SHA-256 fingerprint from apksigner."
+            exit 1
+          fi
+          if [ "$signer" != "$expected" ]; then
+            echo "::error::The APK is signed by $signer, not by $expected."
+            exit 1
+          fi
+          echo "signed by the expected certificate"
+
       - name: Hand the release APK onward
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: pechka-release-apk
           path: app/build/outputs/apk/release/app-release.apk
           retention-days: 7
           if-no-files-found: error
 
-      - name: Hand the debug APK onward
-        if: github.event_name != 'pull_request'
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+      - name: Hand the dev copy onward
+        if: inputs.dev_build || github.event_name != 'pull_request'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: pechka-debug-apk
           path: app/build/outputs/apk/debug/app-debug.apk
