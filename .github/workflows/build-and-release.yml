@@ -51,9 +51,14 @@ jobs:
       contents: read
 
     strategy:
-      fail-fast: true
+      # A shard that fails first must not hide the others. With `fail-fast: true`,
+      # run 43375922719 cancelled Test (1) eleven seconds in: it never ran a test,
+      # and the run could not say whether the code was broken or the shard was.
+      fail-fast: false
       matrix:
-        shard: ${{ fromJSON(vars.TEST_SHARDS || '[0,1]') }}
+        # Three: 30 classes each, against 46 and 44 for two. `tools/check-shards.py`
+        # fails if this default is less even than another count would be.
+        shard: ${{ fromJSON(vars.TEST_SHARDS || '[0,1,2]') }}
 
     steps:
       - name: Check out the code
@@ -81,6 +86,8 @@ jobs:
 
       - name: Check the workflow itself
         if: matrix.shard == 0
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: python3 tools/check-workflow.py
 
       - name: Check that the workflow is readable YAML
@@ -89,6 +96,7 @@ jobs:
           python3 tools/check-yaml.py --self-test
           python3 tools/check-yaml.py
           python3 tools/render-ci-workflow.py --self-test
+          python3 tools/check-shards.py
 
       - name: Check that the public repository's copy is what this one renders to
         if: matrix.shard == 0
@@ -96,20 +104,10 @@ jobs:
           GH_TOKEN: ${{ secrets.PECHKA_READ_TOKEN }}
           PUBLIC_REPO: muffyuniverse/ci
         run: |
-          # The public repository holds a copy of this workflow, generated from this
-          # file by tools/render-ci-workflow.py. A hand-kept copy drifted 755 lines
-          # apart from this one, with a different timeout and a different shard
-          # count, and nothing noticed. Rendering it here and comparing is what
-          # turns that drift into a failure instead of a surprise.
-          #
-          # A copy that cannot be fetched is not a failure: this check exists to
-          # catch a stale copy, and a network problem is not a stale copy. It says
-          # so out loud rather than passing quietly.
-          #
-          # The file is written straight from the API's answer, not through a shell
-          # variable. `copy="$(...)"` drops the last newline, so the fetched copy
-          # was always one byte short of the file it came from and every run would
-          # have reported drift that did not exist.
+          # The public copy is generated; compare it with what this file renders to.
+          # A network failure is not a stale copy, so it warns instead of failing.
+          # The file is written from the API's answer, not a shell variable: `$(...)`
+          # drops the last newline and would report drift that is not there.
           if ! gh api "repos/$PUBLIC_REPO/contents/.github/workflows/build-and-release.yml" \
               --jq '.content' 2>/dev/null | base64 -d > /tmp/public-copy.yml 2>/dev/null \
               || [ ! -s /tmp/public-copy.yml ]; then
