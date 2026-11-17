@@ -8,9 +8,12 @@ on:
       - '.github/workflows/motion-design-render.yml'
   workflow_dispatch:
 permissions: {contents: read}
+# One group per RUN, not per branch. Two dispatches are two independent renders, and neither may
+# cancel the other. An earlier motion-design-<ref> group made a second dispatch silently supersede
+# the first, which reads as a vanished run and throws away work already done.
 concurrency:
-  group: motion-design-${{ github.ref }}
-  cancel-in-progress: true
+  group: motion-design-${{ github.run_id }}
+  cancel-in-progress: false
 jobs:
   render:
     runs-on: ubuntu-latest
@@ -34,6 +37,6 @@ jobs:
         run: bash ci/run.sh
       - uses: actions/upload-artifact@v4
         with:
-          name: motion-design-brand-reveal
+          name: motion-design-brand-reveal-${{ github.run_id }}
           path: m/ci/out/brand-reveal.mp4
           retention-days: 14
