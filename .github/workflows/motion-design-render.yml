@@ -1,23 +1,36 @@
 name: motion-design render
-# This repo is shared by every private project on the account, so this workflow is namespaced by
-# project and deliberately has no bare `push:` trigger — that would fire on every other project's
-# push. It runs on manual dispatch, or when this file itself changes.
+# Shared repo: namespaced by project, no bare push trigger, one concurrency group per run.
 on:
   push:
     paths:
       - '.github/workflows/motion-design-render.yml'
   workflow_dispatch:
+    inputs:
+      composition:
+        description: Composition id registered in ci/remotion/src/Root.tsx
+        required: false
+        default: BrandReveal
+      total_frames:
+        description: Frames in the composition
+        required: false
+        default: '270'
 permissions: {contents: read}
-# One group per RUN, not per branch. Two dispatches are two independent renders, and neither may
-# cancel the other. An earlier motion-design-<ref> group made a second dispatch silently supersede
-# the first, which reads as a vanished run and throws away work already done.
+# One group per RUN: two dispatches are two independent renders and neither may cancel the other.
 concurrency:
   group: motion-design-${{ github.run_id }}
   cancel-in-progress: false
+env:
+  COMPOSITION: ${{ inputs.composition || 'BrandReveal' }}
+  TOTAL_FRAMES: ${{ inputs.total_frames || '270' }}
+  SHARD_SIZE: '90'
 jobs:
   render:
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2]
     steps:
       - name: Checkout motion-design (private)
         uses: actions/checkout@v4
@@ -28,15 +41,46 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
-      - uses: actions/cache@v4
+      - name: Cache node_modules
+        uses: actions/cache@v4
         with:
           path: m/ci/remotion/node_modules
-          key: motion-design-remotion-${{ runner.os }}-${{ hashFiles('m/ci/remotion/package.json') }}
-      - name: Render, shard and join
+          key: motion-design-node-${{ runner.os }}-${{ hashFiles('m/ci/remotion/package.json') }}
+      - name: Cache the browser
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/remotion
+          key: motion-design-chrome-${{ runner.os }}-v1
+      - name: Render shard ${{ matrix.shard }}
         working-directory: m
-        run: bash ci/run.sh
+        run: bash ci/shard.sh ${{ matrix.shard }} "$TOTAL_FRAMES" "$SHARD_SIZE"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: motion-design-shard-${{ matrix.shard }}-${{ github.run_id }}
+          path: m/ci/out/shard-${{ matrix.shard }}.mp4
+          retention-days: 7
+  assemble:
+    needs: render
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout motion-design (private)
+        uses: actions/checkout@v4
+        with:
+          repository: muffyuniverse/motion-design
+          token: ${{ secrets.PECHKA_READ_TOKEN }}
+          path: m
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: motion-design-shard-*-${{ github.run_id }}
+          merge-multiple: true
+          path: shards
+      - name: Join, assert the length, and make a contact sheet
+        run: bash m/ci/join.sh shards brand-reveal.mp4 "$TOTAL_FRAMES"
       - uses: actions/upload-artifact@v4
         with:
           name: motion-design-brand-reveal-${{ github.run_id }}
-          path: m/ci/out/brand-reveal.mp4
+          path: |
+            brand-reveal.mp4
+            brand-reveal-contact.png
           retention-days: 14
