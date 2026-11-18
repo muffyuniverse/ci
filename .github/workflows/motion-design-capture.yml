@@ -25,6 +25,15 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
+      - name: Ensure ffmpeg
+        # Not on the runner image, whatever the image docs suggest: the first capture run died with
+        # "ffmpeg not found on PATH" one second in. Bounded, like every other network step.
+        run: |
+          if ! command -v ffmpeg >/dev/null; then
+            timeout 180 sudo apt-get update -qq || echo "::warning::apt-get update was slow or failed"
+            timeout 300 sudo apt-get install -y -qq ffmpeg || { echo "::error::ffmpeg install failed"; exit 1; }
+          fi
+          ffmpeg -version | head -1
       - name: Cache node_modules and the browser
         uses: actions/cache@v4
         with:
