@@ -1,0 +1,135 @@
+name: tool probes 3 (scaffolds)
+# The three tools that needed a project around them rather than a script. Each gets one runner and
+# thirty minutes; a failure here is a real answer about the tool, not about the harness.
+on:
+  push:
+    paths:
+      - '.github/workflows/tool-probes-3.yml'
+  workflow_dispatch:
+permissions: {contents: read}
+concurrency:
+  group: tool-probes-3-${{ github.run_id }}
+  cancel-in-progress: false
+jobs:
+  revideo:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: muffyuniverse/motion-design
+          token: ${{ secrets.PECHKA_READ_TOKEN }}
+          path: m
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: ffmpeg without apt
+        working-directory: m
+        run: |
+          D=$(bash ci/ffmpeg-static.sh)
+          echo "$D" >> "$GITHUB_PATH"
+      - name: Install revideo
+        working-directory: m/probes/revideo
+        run: npm install --no-audit --no-fund @revideo/2d @revideo/core @revideo/renderer
+      - name: Render
+        working-directory: m/probes/revideo
+        run: node render.mjs
+      - name: Report
+        if: always()
+        working-directory: m/probes/revideo
+        run: ls -la out || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: probe-revideo-${{ github.run_id }}
+          path: m/probes/revideo/out/*.mp4
+          retention-days: 14
+          if-no-files-found: warn
+  rive:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: muffyuniverse/motion-design
+          token: ${{ secrets.PECHKA_READ_TOKEN }}
+          path: m
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: ffmpeg without apt
+        working-directory: m
+        run: |
+          D=$(bash ci/ffmpeg-static.sh)
+          echo "$D" >> "$GITHUB_PATH"
+      - name: Fetch a sample .riv
+        working-directory: m/probes/rive
+        run: |
+          curl -sSL --retry 2 -o vehicles.riv https://cdn.rive.app/animations/vehicles.riv
+          ls -la vehicles.riv
+          head -c 16 vehicles.riv | od -c | head -2
+      - name: Install rive runtime
+        working-directory: m/probes/rive
+        run: npm install --no-audit --no-fund @rive-app/canvas
+      - name: Cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            m/ci/node_modules
+            ~/.cache/puppeteer
+          key: probes-${{ runner.os }}-${{ hashFiles('m/ci/package.json') }}
+      - name: Install capture deps
+        working-directory: m/ci
+        run: npm install --no-audit --no-fund
+      - name: Capture
+        working-directory: m
+        run: node ci/render.mjs --page probes/rive/rive.html --scenes drive --fps 30 --out out/rive
+      - name: Report
+        if: always()
+        working-directory: m
+        run: |
+          cat out/rive/render-report.json || true
+          cat out/rive/render-error.txt || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: probe-rive-${{ github.run_id }}
+          path: |
+            m/out/rive/*.mp4
+            m/out/rive/*-poster.png
+            m/out/rive/render-report.json
+            m/out/rive/render-error.txt
+          retention-days: 14
+          if-no-files-found: warn
+  motion-canvas:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: muffyuniverse/motion-design
+          token: ${{ secrets.PECHKA_READ_TOKEN }}
+          path: m
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Install motion canvas
+        working-directory: m/probes/motion-canvas
+        run: npm install --no-audit --no-fund @motion-canvas/core @motion-canvas/2d @motion-canvas/ui @motion-canvas/vite-plugin vite typescript
+      - name: Build the scaffold
+        working-directory: m/probes/motion-canvas
+        run: npx vite build 2>&1 | tail -25
+      - name: Is there a headless render at all?
+        working-directory: m/probes/motion-canvas
+        run: |
+          echo '--- binaries provided by the packages:'
+          ls node_modules/.bin | sort | head -40
+          echo '--- attempt a render CLI:'
+          npx --no-install motion-canvas render --help 2>&1 | head -20 || echo 'NO_MOTION_CANVAS_CLI'
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: probe-motion-canvas-${{ github.run_id }}
+          path: m/probes/motion-canvas/dist/**
+          retention-days: 7
+          if-no-files-found: warn
