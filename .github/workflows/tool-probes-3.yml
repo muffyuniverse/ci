@@ -30,7 +30,7 @@ jobs:
           echo "$D" >> "$GITHUB_PATH"
       - name: Install revideo
         working-directory: m/probes/revideo
-        run: npm install --no-audit --no-fund @revideo/2d @revideo/core @revideo/renderer @revideo/vite-plugin @revideo/ui @revideo/ffmpeg
+        run: npm install --no-audit --no-fund @revideo/2d @revideo/core @revideo/renderer @revideo/vite-plugin @revideo/ui @revideo/ffmpeg react react-dom
       - name: Browser for the renderer
         working-directory: m/probes/revideo
         run: npx --yes puppeteer browsers install chrome
