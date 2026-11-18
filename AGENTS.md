@@ -4,6 +4,23 @@ This repository runs workflows for multiple projects. It is shared infrastructur
 workflow or artifact may belong to another person or agent. Do not cancel, rerun, overwrite, push
 or delete someone else's work. Ask or coordinate if ownership or intent is unclear.
 
+## Where work runs, and where results go
+
+Private projects do not run Actions. Every job runs here, in this public repository: private
+runners are not part of this setup.
+
+- Check out the private project with `PECHKA_READ_TOKEN`. It can write to
+  `muffyuniverse/motion-design`: prove it with `gh api repos/OWNER/REPO --jq '.permissions.push'`
+  as the first step of any job that will publish, before spending minutes on the work.
+- Deliver results as a **release asset in the private repository that owns the content**, for
+  example `delivery/<piece>` in `motion-design`. A release in a private repository is readable
+  only by people with access, so nothing needs sealing and nothing becomes public.
+- Do not upload project content as an artifact here. Artifacts in this public repository are
+  readable by anyone. If a result genuinely has to leave as an artifact, seal it with
+  `PECHKA_ARTIFACT_KEY` and refuse to upload when the key is empty, as `build-and-release` does.
+- `motion-design-join.yml` is the reference implementation: dispatch only, a permission probe
+  first, a private release, no artifacts.
+
 ## Before dispatching
 
 1. Inspect active and queued runs, their workflow names and run IDs:
