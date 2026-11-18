@@ -30,7 +30,7 @@ jobs:
           echo "$D" >> "$GITHUB_PATH"
       - name: Install revideo
         working-directory: m/probes/revideo
-        run: npm install --no-audit --no-fund @revideo/2d @revideo/core @revideo/renderer
+        run: npm install --no-audit --no-fund @revideo/2d @revideo/core @revideo/renderer @revideo/vite-plugin
       - name: Render
         working-directory: m/probes/revideo
         run: node render.mjs
@@ -118,7 +118,9 @@ jobs:
         run: npm install --no-audit --no-fund @motion-canvas/core @motion-canvas/2d @motion-canvas/ui @motion-canvas/vite-plugin vite typescript
       - name: Build the scaffold
         working-directory: m/probes/motion-canvas
-        run: npx vite build 2>&1 | tail -25
+        run: |
+          set -o pipefail
+          npx vite build 2>&1 | tail -30
       - name: Is there a headless render at all?
         working-directory: m/probes/motion-canvas
         run: |
