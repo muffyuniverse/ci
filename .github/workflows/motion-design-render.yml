@@ -14,6 +14,10 @@ on:
         description: Frames in the composition
         required: false
         default: '270'
+      shard_size:
+        description: Frames per shard
+        required: false
+        default: '90'
 permissions: {contents: read}
 # One group per RUN: two dispatches are two independent renders and neither may cancel the other.
 concurrency:
@@ -22,15 +26,31 @@ concurrency:
 env:
   COMPOSITION: ${{ inputs.composition || 'BrandReveal' }}
   TOTAL_FRAMES: ${{ inputs.total_frames || '270' }}
-  SHARD_SIZE: '90'
+  SHARD_SIZE: ${{ inputs.shard_size || '90' }}
 jobs:
+  plan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      shards: ${{ steps.calc.outputs.shards }}
+    steps:
+      - name: Work out how many shards the film needs
+        id: calc
+        run: |
+          total="$TOTAL_FRAMES"
+          size="$SHARD_SIZE"
+          count=$(( (total + size - 1) / size ))
+          shards=$(seq 0 $((count - 1)) | jq -R . | jq -s -c .)
+          echo "shards=$shards" >> "$GITHUB_OUTPUT"
+          echo "total=$total size=$size shards=$shards"
   render:
+    needs: plan
     runs-on: ubuntu-latest
     timeout-minutes: 10
     strategy:
       fail-fast: false
       matrix:
-        shard: [0, 1, 2]
+        shard: ${{ fromJSON(needs.plan.outputs.shards) }}
     steps:
       - name: Checkout motion-design (private)
         uses: actions/checkout@v4
