@@ -1,0 +1,124 @@
+name: tool probes
+# One real test per tool, in parallel. Each probe renders something a human can look at, because
+# "the import resolved" is not evidence that a tool works.
+on:
+  push:
+    paths:
+      - '.github/workflows/tool-probes.yml'
+  workflow_dispatch:
+permissions: {contents: read}
+concurrency:
+  group: tool-probes-${{ github.run_id }}
+  cancel-in-progress: false
+jobs:
+  capture:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: studio
+            page: workbench/video/studio.html
+            scene: mark
+          - name: gsap
+            page: probes/gsap.html
+            scene: reveal
+          - name: lottie
+            page: probes/lottie.html
+            scene: box
+          - name: three
+            page: probes/three.html
+            scene: spin
+    steps:
+      - name: Checkout motion-design (private)
+        uses: actions/checkout@v4
+        with:
+          repository: muffyuniverse/motion-design
+          token: ${{ secrets.PECHKA_READ_TOKEN }}
+          path: m
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Ensure ffmpeg
+        run: |
+          if ! command -v ffmpeg >/dev/null; then
+            timeout 180 sudo apt-get update -qq || echo "::warning::apt-get update was slow or failed"
+            timeout 300 sudo apt-get install -y -qq ffmpeg || { echo "::error::ffmpeg install failed"; exit 1; }
+          fi
+          ffmpeg -version | head -1
+      - name: Cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            m/ci/node_modules
+            m/probes/node_modules
+            ~/.cache/puppeteer
+          key: probes-${{ runner.os }}-${{ hashFiles('m/ci/package.json', 'm/probes/package.json') }}
+      - name: Install capture deps
+        working-directory: m/ci
+        run: npm install --no-audit --no-fund
+      - name: Install probe deps
+        working-directory: m/probes
+        run: npm install --no-audit --no-fund
+      - name: Capture
+        working-directory: m
+        run: node ci/render.mjs --page ${{ matrix.page }} --scenes ${{ matrix.scene }} --fps 30 --out out/${{ matrix.name }}
+      - name: Report
+        if: always()
+        working-directory: m
+        run: |
+          cat out/${{ matrix.name }}/render-report.json || true
+          cat out/${{ matrix.name }}/render-error.txt || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: probe-${{ matrix.name }}-${{ github.run_id }}
+          path: |
+            m/out/${{ matrix.name }}/*.mp4
+            m/out/${{ matrix.name }}/*-poster.png
+            m/out/${{ matrix.name }}/render-report.json
+            m/out/${{ matrix.name }}/render-error.txt
+          retention-days: 14
+          if-no-files-found: warn
+  stills:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: satori
+            cmd: node probes/satori.mjs out/satori/card.png
+          - name: fontmetrics
+            cmd: node probes/fontmetrics.mjs
+          - name: pixelmatch
+            cmd: node probes/pixelmatch.mjs out/pixelmatch
+    steps:
+      - name: Checkout motion-design (private)
+        uses: actions/checkout@v4
+        with:
+          repository: muffyuniverse/motion-design
+          token: ${{ secrets.PECHKA_READ_TOKEN }}
+          path: m
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Cache
+        uses: actions/cache@v4
+        with:
+          path: m/probes/node_modules
+          key: probes-${{ runner.os }}-${{ hashFiles('m/probes/package.json') }}
+      - name: Install probe deps
+        working-directory: m/probes
+        run: npm install --no-audit --no-fund
+      - name: Run probe
+        working-directory: m
+        run: ${{ matrix.cmd }}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: probe-${{ matrix.name }}-${{ github.run_id }}
+          path: m/out/**
+          retention-days: 14
+          if-no-files-found: warn
