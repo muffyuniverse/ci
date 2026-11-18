@@ -1,0 +1,58 @@
+name: motion-design capture
+# The non-Remotion path: Puppeteer drives workbench/video/studio.html, calls window.renderAt(t)
+# frame by frame, and ffmpeg encodes. Proves the DOM/canvas route works on a runner, not just in
+# a browser on someone's desk.
+on:
+  push:
+    paths:
+      - '.github/workflows/motion-design-capture.yml'
+  workflow_dispatch:
+permissions: {contents: read}
+concurrency:
+  group: motion-design-capture-${{ github.run_id }}
+  cancel-in-progress: false
+jobs:
+  capture:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout motion-design (private)
+        uses: actions/checkout@v4
+        with:
+          repository: muffyuniverse/motion-design
+          token: ${{ secrets.PECHKA_READ_TOKEN }}
+          path: m
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Cache node_modules and the browser
+        uses: actions/cache@v4
+        with:
+          path: |
+            m/ci/node_modules
+            ~/.cache/puppeteer
+          key: motion-design-puppeteer-${{ runner.os }}-${{ hashFiles('m/ci/package.json') }}
+      - name: Install
+        working-directory: m/ci
+        run: npm install --no-audit --no-fund
+      - name: Capture frames and encode
+        working-directory: m
+        run: node ci/render.mjs --scenes mark,loop,vertical --fps 30 --out out
+      - name: Report
+        working-directory: m
+        if: always()
+        run: |
+          ls -la out || true
+          cat out/render-report.json || true
+          cat out/render-error.txt || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: motion-design-capture-${{ github.run_id }}
+          path: |
+            m/out/*.mp4
+            m/out/*-poster.png
+            m/out/render-report.json
+            m/out/render-error.txt
+          retention-days: 14
+          if-no-files-found: warn
