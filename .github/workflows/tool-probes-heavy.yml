@@ -1,17 +1,24 @@
 name: tool probes (heavy)
-# Manim and Blender, one runner each. Both are slow, so they run beside the fast probes, never
-# after them, and neither can block the other.
+# Manual only, with explicit selection. These jobs are slow and expensive, and editing this file
+# should not silently re-render both of them.
 on:
-  push:
-    paths:
-      - '.github/workflows/tool-probes-heavy.yml'
   workflow_dispatch:
+    inputs:
+      manim:
+        description: 'Run the Manim probe'
+        type: boolean
+        default: true
+      blender:
+        description: 'Run the Blender probe'
+        type: boolean
+        default: false
 permissions: {contents: read}
 concurrency:
   group: tool-probes-heavy-${{ github.run_id }}
   cancel-in-progress: false
 jobs:
   manim:
+    if: ${{ inputs.manim }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
@@ -22,7 +29,7 @@ jobs:
           path: m
       - name: System dependencies
         run: |
-          timeout 300 sudo apt-get update -qq || echo "::warning::apt-get update was slow or failed"
+          timeout 600 sudo apt-get update -qq || echo "::warning::apt-get update was slow or failed"
           timeout 900 sudo apt-get install -y -qq ffmpeg build-essential pkg-config libcairo2-dev libpango1.0-dev python3-dev || { echo "::error::system deps failed"; exit 1; }
       - uses: actions/setup-python@v5
         with:
@@ -50,6 +57,7 @@ jobs:
           retention-days: 14
           if-no-files-found: warn
   blender:
+    if: ${{ inputs.blender }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
@@ -60,7 +68,7 @@ jobs:
           path: m
       - name: Install blender
         run: |
-          timeout 300 sudo apt-get update -qq || echo "::warning::apt-get update was slow or failed"
+          timeout 600 sudo apt-get update -qq || echo "::warning::apt-get update was slow or failed"
           timeout 900 sudo apt-get install -y -qq blender || { echo "::error::blender install failed"; exit 1; }
           blender --version | head -2
       - name: Render three frames
