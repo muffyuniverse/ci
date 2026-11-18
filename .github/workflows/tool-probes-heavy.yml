@@ -1,0 +1,82 @@
+name: tool probes (heavy)
+# Manim and Blender, one runner each. Both are slow, so they run beside the fast probes, never
+# after them, and neither can block the other.
+on:
+  push:
+    paths:
+      - '.github/workflows/tool-probes-heavy.yml'
+  workflow_dispatch:
+permissions: {contents: read}
+concurrency:
+  group: tool-probes-heavy-${{ github.run_id }}
+  cancel-in-progress: false
+jobs:
+  manim:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: muffyuniverse/motion-design
+          token: ${{ secrets.PECHKA_READ_TOKEN }}
+          path: m
+      - name: System dependencies
+        run: |
+          timeout 300 sudo apt-get update -qq || echo "::warning::apt-get update was slow or failed"
+          timeout 900 sudo apt-get install -y -qq ffmpeg build-essential pkg-config libcairo2-dev libpango1.0-dev python3-dev || { echo "::error::system deps failed"; exit 1; }
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install manim
+        working-directory: m
+        run: |
+          python3 -m venv .venv
+          .venv/bin/pip install --upgrade pip -q
+          timeout 900 .venv/bin/pip install -q manim || { echo "::error::manim install failed"; exit 1; }
+          .venv/bin/manim --version
+      - name: Render
+        working-directory: m
+        run: .venv/bin/manim -ql --media_dir out/manim probes/manim/scene.py Probe
+      - name: Verify output
+        working-directory: m
+        run: |
+          find out/manim -name '*.mp4' -print || true
+          test -n "$(find out/manim -name '*.mp4' -size +1k -print -quit)" || { echo "::error::manim produced no mp4"; exit 1; }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: probe-manim-${{ github.run_id }}
+          path: m/out/manim/**/*.mp4
+          retention-days: 14
+          if-no-files-found: warn
+  blender:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: muffyuniverse/motion-design
+          token: ${{ secrets.PECHKA_READ_TOKEN }}
+          path: m
+      - name: Install blender
+        run: |
+          timeout 300 sudo apt-get update -qq || echo "::warning::apt-get update was slow or failed"
+          timeout 900 sudo apt-get install -y -qq blender || { echo "::error::blender install failed"; exit 1; }
+          blender --version | head -2
+      - name: Render three frames
+        working-directory: m
+        run: timeout 1200 blender -b -P probes/blender/scene.py
+      - name: Verify frames
+        working-directory: m
+        run: |
+          ls -la out/blender || true
+          n=$(ls out/blender/*.png 2>/dev/null | wc -l)
+          echo "frames=$n"
+          test "$n" -ge 3 || { echo "::error::expected 3 frames, got $n"; exit 1; }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: probe-blender-${{ github.run_id }}
+          path: m/out/blender/*.png
+          retention-days: 14
+          if-no-files-found: warn
