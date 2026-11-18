@@ -1,6 +1,9 @@
 name: tool probes
 # One real test per tool, in parallel. Each probe renders something a human can look at, because
 # "the import resolved" is not evidence that a tool works.
+#
+# Startup work, 2026-11-18: ffmpeg comes from the static tarball (2.1 s) instead of apt (17.0 s),
+# and the capture driver defaults to Playwright (71 ms launch) instead of Puppeteer (509 ms).
 on:
   push:
     paths:
@@ -21,15 +24,23 @@ jobs:
           - name: studio
             page: workbench/video/studio.html
             scene: mark
+            driver: playwright
+          - name: studio-puppeteer
+            page: workbench/video/studio.html
+            scene: mark
+            driver: puppeteer
           - name: gsap
             page: probes/gsap.html
             scene: reveal
+            driver: playwright
           - name: lottie
             page: probes/lottie.html
             scene: box
+            driver: playwright
           - name: three
             page: probes/three.html
             scene: spin
+            driver: playwright
     steps:
       - name: Checkout motion-design (private)
         uses: actions/checkout@v4
@@ -40,15 +51,12 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
-      - name: Ensure ffmpeg
-        # Every job in this matrix calls apt at once, and the mirror answers slowly under that.
-        # 180 s was not enough: one job hit it and died before it had tested anything.
+      - name: ffmpeg without apt
+        working-directory: m
         run: |
-          if ! command -v ffmpeg >/dev/null 2>&1; then
-            timeout 600 sudo apt-get update -qq || echo "::warning::apt-get update was slow or failed"
-            timeout 900 sudo apt-get install -y -qq ffmpeg || { echo "::error::ffmpeg install failed"; exit 1; }
-          fi
-          ffmpeg -version | head -1
+          D=$(bash ci/ffmpeg-static.sh)
+          echo "$D" >> "$GITHUB_PATH"
+          "$D/ffmpeg" -version | head -1
       - name: Cache
         uses: actions/cache@v4
         with:
@@ -56,16 +64,19 @@ jobs:
             m/ci/node_modules
             m/probes/node_modules
             ~/.cache/puppeteer
+            ~/.cache/ms-playwright
           key: probes-${{ runner.os }}-${{ hashFiles('m/ci/package.json', 'm/probes/package.json') }}
       - name: Install capture deps
         working-directory: m/ci
-        run: npm install --no-audit --no-fund
+        run: |
+          npm install --no-audit --no-fund
+          npx --yes playwright install chromium
       - name: Install probe deps
         working-directory: m/probes
         run: npm install --no-audit --no-fund
       - name: Capture
         working-directory: m
-        run: node ci/render.mjs --page ${{ matrix.page }} --scenes ${{ matrix.scene }} --fps 30 --out out/${{ matrix.name }}
+        run: node ci/render.mjs --driver ${{ matrix.driver }} --page ${{ matrix.page }} --scenes ${{ matrix.scene }} --fps 30 --out out/${{ matrix.name }}
       - name: Report
         if: always()
         working-directory: m
