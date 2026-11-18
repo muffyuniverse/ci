@@ -1,0 +1,104 @@
+name: motion-design join
+# Joins the two 15 s passes of a 30 s piece into one master and publishes it as a release asset
+# in the PRIVATE motion-design repository.
+#
+# A release in a private repository is visible only to people with access, so this needs no
+# sealing and leaves no artifact in this public repository. That is the whole point of this
+# workflow living here rather than in motion-design, which must not run Actions at all.
+#
+# Dispatch only: `branch` is required, so a push run would have nothing to check out.
+on:
+  workflow_dispatch:
+    inputs:
+      theme:
+        description: Piece name without suffix (h1-nervous-system)
+        required: true
+        default: h1-nervous-system
+      branch:
+        description: Branch in motion-design holding __part1.mp4 and __part2.mp4
+        required: true
+      aspect:
+        description: '16x9 or 9x16'
+        required: true
+        default: '16x9'
+permissions: {contents: read}
+concurrency:
+  group: motion-design-join-${{ github.run_id }}
+  cancel-in-progress: false
+env:
+  REPO: muffyuniverse/motion-design
+  THEME: ${{ inputs.theme }}
+  ASPECT: ${{ inputs.aspect }}
+  GH_TOKEN: ${{ secrets.PECHKA_READ_TOKEN }}
+jobs:
+  join:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check the token can publish to the private repo
+        # Publishing a release asset is contents: write on motion-design. Prove it before the
+        # ten-minute join, not after it.
+        run: |
+          set -euo pipefail
+          can=$(gh api "repos/$REPO" --jq '.permissions.push')
+          echo "push permission on $REPO: $can"
+          if [ "$can" != "true" ]; then
+            echo "::error::PECHKA_READ_TOKEN cannot write to $REPO; a release asset needs contents: write."
+            exit 1
+          fi
+      - name: Checkout motion-design (private)
+        uses: actions/checkout@v4
+        with:
+          repository: muffyuniverse/motion-design
+          token: ${{ secrets.PECHKA_READ_TOKEN }}
+          ref: ${{ inputs.branch }}
+          path: m
+      - name: Ensure ffmpeg
+        # Not on the runner image: the first capture run died with "ffmpeg not found on PATH".
+        run: |
+          if ! command -v ffmpeg >/dev/null; then
+            timeout 180 sudo apt-get update -qq || echo "::warning::apt-get update was slow or failed"
+            timeout 300 sudo apt-get install -y -qq ffmpeg || { echo "::error::ffmpeg install failed"; exit 1; }
+          fi
+          ffmpeg -version | head -1
+      - name: Check both halves exist
+        working-directory: m/clients/baon/themes/delivery
+        run: |
+          set -euo pipefail
+          for p in part1 part2; do
+            f="${THEME}__$p.mp4"
+            test -f "$f" || { echo "::error::missing $f on ${{ inputs.branch }}"; exit 1; }
+            echo "found $f ($(stat -c%s "$f") bytes)"
+          done
+      - name: Join
+        working-directory: m/clients/baon/themes/delivery
+        run: |
+          set -euo pipefail
+          printf "file '%s__part1.mp4'\nfile '%s__part2.mp4'\n" "$THEME" "$THEME" > list.txt
+          # Re-encode, not -c copy: the halves come from separate captures, so their timestamps
+          # differ by a frame and a stream copy hitches at the seam.
+          ffmpeg -y -f concat -safe 0 -i list.txt \
+            -c:v libx264 -crf 18 -preset medium -pix_fmt yuv420p -r 24 -movflags +faststart \
+            "${THEME}__${ASPECT}.mp4"
+          rm -f list.txt
+          mv "${THEME}__${ASPECT}.mp4" "$RUNNER_TEMP/"
+      - name: Assert the result is ~30 s
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/${THEME}__${ASPECT}.mp4"
+          d=$(ffprobe -v error -show_entries format=duration -of default=nw=1:nk=1 "$out")
+          echo "duration: ${d}s"
+          awk -v d="$d" 'BEGIN { if (d < 28 || d > 32) { print "::error::duration out of range: " d; exit 1 } }'
+      - name: Publish to the private release
+        # One release per piece: a re-run replaces the asset instead of piling up tags.
+        run: |
+          set -euo pipefail
+          tag="delivery/${THEME}"
+          file="$RUNNER_TEMP/${THEME}__${ASPECT}.mp4"
+          if ! gh release view "$tag" --repo "$REPO" >/dev/null 2>&1; then
+            gh release create "$tag" --repo "$REPO" --title "$THEME" \
+              --notes "Joined on run ${{ github.run_id }} from branch ${{ inputs.branch }}."
+          fi
+          gh release upload "$tag" "$file" --repo "$REPO" --clobber
+          gh release view "$tag" --repo "$REPO" --json tagName,assets \
+            --jq '.tagName, (.assets[] | "\(.name) \(.size)")'
