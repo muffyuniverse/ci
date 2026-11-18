@@ -1,12 +1,33 @@
 name: motion-design capture
-# The non-Remotion path: Puppeteer drives workbench/video/studio.html, calls window.renderAt(t)
-# frame by frame, and ffmpeg encodes. Proves the DOM/canvas route works on a runner, not just in
+# The non-Remotion path: Puppeteer drives a page that implements renderAt/sceneInfo/setScene, calls
+# it frame by frame, and ffmpeg encodes. Proves the DOM/canvas route works on a runner, not just in
 # a browser on someone's desk.
+#
+# Inputs added 2026-11-18 so the same job renders any film without editing this file. The checkout
+# used to take the default branch, which meant a piece living in a delivery branch could not be
+# rendered at all — and delivery artifacts are explicitly not merged to main.
 on:
   push:
     paths:
       - '.github/workflows/motion-design-capture.yml'
   workflow_dispatch:
+    inputs:
+      ref:
+        description: Branch of motion-design to render
+        required: false
+        default: main
+      page:
+        description: Page implementing renderAt / sceneInfo / setScene
+        required: false
+        default: workbench/video/studio.html
+      scenes:
+        description: Comma-separated scene names
+        required: false
+        default: mark,loop,vertical
+      fps:
+        description: Frames per second
+        required: false
+        default: '30'
 permissions: {contents: read}
 concurrency:
   group: motion-design-capture-${{ github.run_id }}
@@ -14,13 +35,14 @@ concurrency:
 jobs:
   capture:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - name: Checkout motion-design (private)
         uses: actions/checkout@v4
         with:
           repository: muffyuniverse/motion-design
           token: ${{ secrets.PECHKA_READ_TOKEN }}
+          ref: ${{ inputs.ref || 'main' }}
           path: m
       - uses: actions/setup-node@v4
         with:
@@ -46,7 +68,14 @@ jobs:
         run: npm install --no-audit --no-fund
       - name: Capture frames and encode
         working-directory: m
-        run: node ci/render.mjs --scenes mark,loop,vertical --fps 30 --out out
+        # Single quotes around each value: the page query carries & and ?, and an unquoted &
+        # would background the process and silently render nothing.
+        run: |
+          node ci/render.mjs \
+            --page '${{ inputs.page || 'workbench/video/studio.html' }}' \
+            --scenes '${{ inputs.scenes || 'mark,loop,vertical' }}' \
+            --fps '${{ inputs.fps || '30' }}' \
+            --out out
       - name: Report
         working-directory: m
         if: always()
