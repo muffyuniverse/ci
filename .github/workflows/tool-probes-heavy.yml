@@ -27,10 +27,13 @@ jobs:
           repository: muffyuniverse/motion-design
           token: ${{ secrets.PECHKA_READ_TOKEN }}
           path: m
-      - name: System dependencies
+      - name: System dependencies, TeX included
+        # MathTex shells out to latex and dvisvgm. Without them the scene dies with
+        # FileNotFoundError: 'latex' — a missing package, not a Manim problem.
         run: |
           timeout 600 sudo apt-get update -qq || echo "::warning::apt-get update was slow or failed"
-          timeout 900 sudo apt-get install -y -qq ffmpeg build-essential pkg-config libcairo2-dev libpango1.0-dev python3-dev || { echo "::error::system deps failed"; exit 1; }
+          timeout 1800 sudo apt-get install -y -qq ffmpeg build-essential pkg-config libcairo2-dev libpango1.0-dev python3-dev texlive-latex-base texlive-latex-extra texlive-fonts-recommended dvisvgm || { echo "::error::system deps failed"; exit 1; }
+          latex --version | head -1
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
@@ -66,14 +69,21 @@ jobs:
           repository: muffyuniverse/motion-design
           token: ${{ secrets.PECHKA_READ_TOKEN }}
           path: m
-      - name: Install blender
+      - name: Runtime libraries
         run: |
           timeout 600 sudo apt-get update -qq || echo "::warning::apt-get update was slow or failed"
-          timeout 900 sudo apt-get install -y -qq blender || { echo "::error::blender install failed"; exit 1; }
-          blender --version | head -2
+          timeout 900 sudo apt-get install -y -qq libxi6 libxxf86vm1 libxfixes3 libxkbcommon0 libgl1 libsm6 libice6 || { echo "::error::blender runtime libs failed"; exit 1; }
+      - name: Install blender from the pinned tarball
+        # apt-get install blender pulled a dependency tree big enough to blow a 15-minute ceiling.
+        # The official tarball is 335 MB and self-contained.
+        run: |
+          curl -sSL --retry 3 -o /tmp/blender.tar.xz https://download.blender.org/release/Blender4.2/blender-4.2.3-linux-x64.tar.xz
+          mkdir -p /opt/blender
+          tar -xf /tmp/blender.tar.xz -C /opt/blender --strip-components=1
+          /opt/blender/blender --version | head -3
       - name: Render three frames
         working-directory: m
-        run: timeout 1200 blender -b -P probes/blender/scene.py
+        run: timeout 1200 /opt/blender/blender -b -P probes/blender/scene.py
       - name: Verify frames
         working-directory: m
         run: |
