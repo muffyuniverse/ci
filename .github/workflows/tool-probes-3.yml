@@ -31,6 +31,9 @@ jobs:
       - name: Install revideo
         working-directory: m/probes/revideo
         run: npm install --no-audit --no-fund @revideo/2d @revideo/core @revideo/renderer @revideo/vite-plugin @revideo/ui @revideo/ffmpeg
+      - name: Browser for the renderer
+        working-directory: m/probes/revideo
+        run: npx --yes puppeteer browsers install chrome
       - name: Render
         working-directory: m/probes/revideo
         run: node render.mjs
