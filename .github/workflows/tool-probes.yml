@@ -24,19 +24,19 @@ jobs:
           - name: studio
             page: workbench/video/studio.html
             scene: mark
-            driver: playwright
-          - name: studio-puppeteer
+            driver: puppeteer
+          - name: studio-playwright
             page: workbench/video/studio.html
             scene: mark
-            driver: puppeteer
+            driver: playwright
           - name: gsap
             page: probes/gsap.html
             scene: reveal
-            driver: playwright
+            driver: puppeteer
           - name: lottie
             page: probes/lottie.html
             scene: box
-            driver: playwright
+            driver: puppeteer
           - name: three
             page: probes/three.html
             scene: spin
