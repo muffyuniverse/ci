@@ -13,7 +13,7 @@ concurrency:
 jobs:
   capture:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
     strategy:
       fail-fast: false
       matrix:
@@ -41,10 +41,12 @@ jobs:
         with:
           node-version: '20'
       - name: Ensure ffmpeg
+        # Every job in this matrix calls apt at once, and the mirror answers slowly under that.
+        # 180 s was not enough: one job hit it and died before it had tested anything.
         run: |
-          if ! command -v ffmpeg >/dev/null; then
-            timeout 180 sudo apt-get update -qq || echo "::warning::apt-get update was slow or failed"
-            timeout 300 sudo apt-get install -y -qq ffmpeg || { echo "::error::ffmpeg install failed"; exit 1; }
+          if ! command -v ffmpeg >/dev/null 2>&1; then
+            timeout 600 sudo apt-get update -qq || echo "::warning::apt-get update was slow or failed"
+            timeout 900 sudo apt-get install -y -qq ffmpeg || { echo "::error::ffmpeg install failed"; exit 1; }
           fi
           ffmpeg -version | head -1
       - name: Cache
