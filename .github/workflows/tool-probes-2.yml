@@ -1,0 +1,146 @@
+name: tool probes 2 (benchmarks)
+# Which of each pair is faster, and where startup time actually goes. Each pair is measured in one
+# job on one runner, because a number from a different machine is not a comparison.
+on:
+  push:
+    paths:
+      - '.github/workflows/tool-probes-2.yml'
+  workflow_dispatch:
+permissions: {contents: read}
+concurrency:
+  group: tool-probes-2-${{ github.run_id }}
+  cancel-in-progress: false
+jobs:
+  startup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: muffyuniverse/motion-design
+          token: ${{ secrets.PECHKA_READ_TOKEN }}
+          path: m
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: What the image already has
+        run: |
+          for b in ffmpeg google-chrome chromium chromium-browser convert montage; do
+            printf '%-20s' "$b"; command -v "$b" || echo MISSING
+          done
+      - name: Cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            m/ci/node_modules
+            m/probes/node_modules
+            ~/.cache/puppeteer
+            ~/.cache/ms-playwright
+          key: bench-${{ runner.os }}-${{ hashFiles('m/ci/package.json', 'm/probes/package.json') }}
+      - name: Time every install path
+        working-directory: m
+        run: |
+          ms() { echo $(( $(date +%s%3N) - $1 )); }
+          t=$(date +%s%3N); (cd ci && npm install --no-audit --no-fund --silent); echo "npm_ci_ms=$(ms $t)"
+          t=$(date +%s%3N); (cd probes && npm install --no-audit --no-fund --silent); echo "npm_probes_ms=$(ms $t)"
+          if ! command -v ffmpeg >/dev/null 2>&1; then
+            t=$(date +%s%3N)
+            sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg
+            echo "apt_ffmpeg_ms=$(ms $t)"
+          else
+            echo "apt_ffmpeg_ms=0"
+          fi
+          t=$(date +%s%3N)
+          curl -sSL --retry 2 -o /tmp/ff-static.tar.xz https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz
+          mkdir -p /tmp/ff-static && tar -xf /tmp/ff-static.tar.xz -C /tmp/ff-static --strip-components=1
+          echo "static_ffmpeg_ms=$(ms $t)"
+          /tmp/ff-static/ffmpeg -version | head -1
+          t=$(date +%s%3N); (cd ci && npx --yes puppeteer browsers install chrome >/dev/null 2>&1); echo "puppeteer_chrome_ms=$(ms $t)"
+          t=$(date +%s%3N); (cd probes && npx --yes playwright install chromium >/dev/null 2>&1); echo "playwright_chromium_ms=$(ms $t)"
+      - name: Launch timings
+        working-directory: m/probes
+        run: node bench-startup.mjs
+  capture:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: muffyuniverse/motion-design
+          token: ${{ secrets.PECHKA_READ_TOKEN }}
+          path: m
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            m/ci/node_modules
+            m/probes/node_modules
+            ~/.cache/puppeteer
+            ~/.cache/ms-playwright
+          key: bench-${{ runner.os }}-${{ hashFiles('m/ci/package.json', 'm/probes/package.json') }}
+      - name: Install drivers
+        working-directory: m
+        run: |
+          (cd ci && npm install --no-audit --no-fund)
+          (cd probes && npm install --no-audit --no-fund)
+          (cd probes && npx --yes playwright install chromium)
+      - name: Benchmark
+        working-directory: m
+        run: node probes/bench-capture.mjs
+  stills:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: muffyuniverse/motion-design
+          token: ${{ secrets.PECHKA_READ_TOKEN }}
+          path: m
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Cache
+        uses: actions/cache@v4
+        with:
+          path: m/probes/node_modules
+          key: bench-${{ runner.os }}-${{ hashFiles('m/probes/package.json') }}
+      - name: Install
+        working-directory: m/probes
+        run: npm install --no-audit --no-fund
+      - name: Benchmark
+        working-directory: m
+        run: node probes/bench-stills.mjs
+  contact:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: muffyuniverse/motion-design
+          token: ${{ secrets.PECHKA_READ_TOKEN }}
+          path: m
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Ensure ffmpeg
+        run: |
+          if ! command -v ffmpeg >/dev/null 2>&1; then
+            timeout 600 sudo apt-get update -qq || echo "::warning::apt-get update was slow or failed"
+            timeout 900 sudo apt-get install -y -qq ffmpeg || { echo "::error::ffmpeg install failed"; exit 1; }
+          fi
+          ffmpeg -version | head -1
+          command -v montage || echo 'montage MISSING'
+      - name: Cache
+        uses: actions/cache@v4
+        with:
+          path: m/probes/node_modules
+          key: bench-${{ runner.os }}-${{ hashFiles('m/probes/package.json') }}
+      - name: Install
+        working-directory: m/probes
+        run: npm install --no-audit --no-fund
+      - name: Benchmark
+        working-directory: m
+        run: node probes/bench-contact.mjs
