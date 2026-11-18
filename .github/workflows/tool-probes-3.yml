@@ -30,7 +30,7 @@ jobs:
           echo "$D" >> "$GITHUB_PATH"
       - name: Install revideo
         working-directory: m/probes/revideo
-        run: npm install --no-audit --no-fund @revideo/2d @revideo/core @revideo/renderer @revideo/vite-plugin
+        run: npm install --no-audit --no-fund @revideo/2d @revideo/core @revideo/renderer @revideo/vite-plugin @revideo/ui @revideo/ffmpeg
       - name: Render
         working-directory: m/probes/revideo
         run: node render.mjs
@@ -115,7 +115,7 @@ jobs:
           node-version: '20'
       - name: Install motion canvas
         working-directory: m/probes/motion-canvas
-        run: npm install --no-audit --no-fund @motion-canvas/core @motion-canvas/2d @motion-canvas/ui @motion-canvas/vite-plugin vite typescript
+        run: npm install --no-audit --no-fund @motion-canvas/core @motion-canvas/2d @motion-canvas/ui @motion-canvas/vite-plugin vite@5 typescript
       - name: Build the scaffold
         working-directory: m/probes/motion-canvas
         run: |
